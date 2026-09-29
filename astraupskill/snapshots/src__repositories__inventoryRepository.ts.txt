@@ -1,0 +1,87 @@
+/*
+What this file does: Declares the persistence contract the services depend on, so the in-memory store can be replaced by Prisma later without rewriting business logic.
+What calls it: service factories and tests.
+What it calls: nothing; it is an interface layer only.
+Junior mistake: making services depend on Maps or arrays directly instead of a repository boundary.
+*/
+
+import type { AlertStatus, InventoryItem, InventoryReservation, LowStockAlert, ReservationStatus } from '@/domain/inventory';
+
+export interface CreateItemRecord {
+  sku: string;
+  name: string;
+  unit: string;
+  onHand: number;
+  reservedQuantity?: number;
+  reorderPoint: number;
+}
+
+export interface UpdateItemRecord {
+  sku?: string;
+  name?: string;
+  unit?: string;
+  onHand?: number;
+  reservedQuantity?: number;
+  reorderPoint?: number;
+}
+
+export interface CreateReservationRecord {
+  itemId: string;
+  itemSku: string;
+  itemName: string;
+  quantity: number;
+  reason: string;
+  status: ReservationStatus;
+  createdByUserId: string;
+  createdByUserName: string;
+  releasedAt?: string;
+  releasedByUserId?: string;
+  releaseReason?: string;
+}
+
+export interface UpdateReservationRecord {
+  quantity?: number;
+  reason?: string;
+  status?: ReservationStatus;
+  releasedAt?: string;
+  releasedByUserId?: string;
+  releaseReason?: string;
+}
+
+export interface CreateAlertRecord {
+  itemId: string;
+  itemSku: string;
+  itemName: string;
+  threshold: number;
+  availableQuantity: number;
+  message: string;
+  status: AlertStatus;
+  clearedAt?: string;
+}
+
+export interface UpdateAlertRecord {
+  itemSku?: string;
+  itemName?: string;
+  threshold?: number;
+  availableQuantity?: number;
+  message?: string;
+  status?: AlertStatus;
+  clearedAt?: string;
+}
+
+export interface InventoryRepository {
+  listItems(): Promise<InventoryItem[]>;
+  getItemById(itemId: string): Promise<InventoryItem | null>;
+  createItem(record: CreateItemRecord): Promise<InventoryItem>;
+  updateItem(itemId: string, patch: UpdateItemRecord): Promise<InventoryItem | null>;
+
+  listReservations(filter?: { itemId?: string; createdByUserId?: string; status?: ReservationStatus }): Promise<InventoryReservation[]>;
+  getReservationById(reservationId: string): Promise<InventoryReservation | null>;
+  createReservation(record: CreateReservationRecord): Promise<InventoryReservation>;
+  updateReservation(reservationId: string, patch: UpdateReservationRecord): Promise<InventoryReservation | null>;
+
+  listAlerts(filter?: { itemId?: string; status?: AlertStatus }): Promise<LowStockAlert[]>;
+  getOpenAlertByItemId(itemId: string): Promise<LowStockAlert | null>;
+  createAlert(record: CreateAlertRecord): Promise<LowStockAlert>;
+  updateAlert(alertId: string, patch: UpdateAlertRecord): Promise<LowStockAlert | null>;
+}

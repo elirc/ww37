@@ -1,0 +1,130 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { POST as createItemRoute } from '@/app/api/items/route';
+import { AppError } from '@/lib/errors';
+import { createSeedData } from '@/data/seed';
+import { createAlertService } from '@/services/alertService';
+import { createInventoryService } from '@/services/inventoryService';
+import { createReservationService } from '@/services/reservationService';
+import { InMemoryInventoryRepository } from '@/repositories/inMemoryInventoryRepository';
+import { createHoldSchema } from '@/lib/validation/reservationSchemas';
+
+const managerSession = {
+  userId: 'manager-01',
+  displayName: 'Store Manager',
+  role: 'manager' as const,
+};
+
+const clerkSession = {
+  userId: 'clerk-01',
+  displayName: 'Maya Clerk',
+  role: 'clerk' as const,
+};
+
+function createRequest(body: unknown, session = clerkSession): Request {
+  return new Request('http://localhost/api/items', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-user-id': session.userId,
+      'x-user-name': session.displayName,
+      'x-user-role': session.role,
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+test('POST /api/items rejects clerk writes with 403', async () => {
+  // This catches the bug where the UI hides a button but the API still allows a forbidden write.
+  const response = await createItemRoute(
+    createRequest({
+      sku: 'NUT-BTR',
+      name: 'Peanut Butter',
+      unit: 'jar',
+      initialOnHand: 12,
+      reorderPoint: 4,
+    })
+  );
+
+  assert.equal(response.status, 403);
+  const payload = (await response.json()) as { error: { code: string } };
+  assert.equal(payload.error.code, 'FORBIDDEN');
+});
+
+test('createHoldSchema rejects invalid hold payloads', () => {
+  // This catches malformed reservation requests before they can reach the stock math.
+  const result = createHoldSchema.safeParse({
+    itemId: 'not-a-uuid',
+    quantity: 0,
+    reason: '  ',
+  });
+
+  assert.equal(result.success, false);
+});
+
+test('releaseHold rejects a second release of the same reservation', async () => {
+  // This catches a state-transition bug where a released hold could be released again and inflate inventory.
+  const repository = new InMemoryInventoryRepository(createSeedData());
+  const alertService = createAlertService(repository);
+  const reservationService = createReservationService(repository, alertService);
+  const item = (await repository.listItems()).find((candidate) => candidate.sku === 'MILK-1L');
+
+  assert.ok(item);
+
+  const hold = await reservationService.createHold(
+    {
+      itemId: item!.id,
+      quantity: 1,
+      reason: 'Customer pickup later today',
+    },
+    clerkSession
+  );
+
+  await reservationService.releaseHold(
+    hold.reservation.id,
+    {
+      releaseReason: 'Picked up by customer',
+    },
+    clerkSession
+  );
+
+  await assert.rejects(
+    reservationService.releaseHold(
+      hold.reservation.id,
+      {
+        releaseReason: 'Trying to release twice',
+      },
+      clerkSession
+    ),
+    (error) => error instanceof AppError && error.statusCode === 409
+  );
+});
+
+test("listReservations scopes clerk visibility to the clerk's own holds", async () => {
+  // This catches a data-leak bug where one clerk could accidentally see another clerk's reservations.
+  const repository = new InMemoryInventoryRepository(createSeedData());
+  const alertService = createAlertService(repository);
+  const reservationService = createReservationService(repository, alertService);
+  const item = (await repository.listItems()).find((candidate) => candidate.sku === 'MILK-1L');
+
+  assert.ok(item);
+
+  await reservationService.createHold(
+    {
+      itemId: item!.id,
+      quantity: 1,
+      reason: 'Manager review hold',
+    },
+    managerSession
+  );
+
+  const clerkReservations = await reservationService.listReservations(clerkSession);
+
+  assert.ok(clerkReservations.length > 0);
+  assert.ok(clerkReservations.every((reservation) => reservation.createdByUserId === clerkSession.userId));
+  assert.equal(
+    clerkReservations.some((reservation) => reservation.createdByUserId === managerSession.userId),
+    false
+  );
+});

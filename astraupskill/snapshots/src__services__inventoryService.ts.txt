@@ -1,0 +1,128 @@
+/*
+What this file does: Owns item CRUD and stock-adjustment rules, including the low-stock alert handoff after each mutation.
+What calls it: the item API routes and the dashboard UI.
+What it calls: the repository, the alert service, and role-based permission helpers.
+Junior mistake: assuming the UI will prevent negative stock or unauthorized writes instead of enforcing those rules here.
+*/
+
+import type { Session } from '@/lib/auth/session';
+import { getAvailableQuantity, type InventoryItem } from '@/domain/inventory';
+import { conflictError, forbiddenError, notFoundError } from '@/lib/errors';
+import { canManageInventoryAction } from '@/lib/middleware/withRole';
+import type { AdjustStockInput, CreateItemInput, UpdateItemInput } from '@/lib/validation/itemSchemas';
+import type { AlertService } from '@/services/alertService';
+import { alertService } from '@/services/alertService';
+import { inventoryRepository } from '@/repositories/inMemoryInventoryRepository';
+import type { InventoryRepository } from '@/repositories/inventoryRepository';
+
+export interface ItemMutationResult {
+  item: InventoryItem;
+  alert: Awaited<ReturnType<AlertService['syncLowStockAlertForItem']>>;
+}
+
+export interface InventoryService {
+  listItems(): Promise<InventoryItem[]>;
+  getItem(itemId: string): Promise<InventoryItem | null>;
+  createItem(input: CreateItemInput, session: Session): Promise<ItemMutationResult>;
+  updateItem(itemId: string, input: UpdateItemInput, session: Session): Promise<ItemMutationResult>;
+  adjustStock(itemId: string, input: AdjustStockInput, session: Session): Promise<ItemMutationResult>;
+}
+
+function assertInventoryManager(session: Session): void {
+  if (!canManageInventoryAction(session.role)) {
+    throw forbiddenError('Only owners and managers can change item records.');
+  }
+}
+
+function resolveNextStock(item: InventoryItem, delta: number): number {
+  return item.onHand + delta;
+}
+
+export function createInventoryService(repository: InventoryRepository, alertSync: AlertService): InventoryService {
+  return {
+    async listItems(): Promise<InventoryItem[]> {
+      return repository.listItems();
+    },
+
+    async getItem(itemId: string): Promise<InventoryItem | null> {
+      return repository.getItemById(itemId);
+    },
+
+    async createItem(input: CreateItemInput, session: Session): Promise<ItemMutationResult> {
+      assertInventoryManager(session);
+
+      const item = await repository.createItem({
+        sku: input.sku,
+        name: input.name,
+        unit: input.unit,
+        onHand: input.initialOnHand,
+        reorderPoint: input.reorderPoint,
+      });
+
+      const alert = await alertSync.syncLowStockAlertForItem(item);
+      return { item, alert };
+    },
+
+    async updateItem(itemId: string, input: UpdateItemInput, session: Session): Promise<ItemMutationResult> {
+      assertInventoryManager(session);
+
+      const existing = await repository.getItemById(itemId);
+      if (!existing) {
+        throw notFoundError('Item not found.');
+      }
+
+      const item = await repository.updateItem(itemId, {
+        sku: input.sku,
+        name: input.name,
+        unit: input.unit,
+        reorderPoint: input.reorderPoint,
+      });
+
+      if (!item) {
+        throw notFoundError('Item not found.');
+      }
+
+      const alert = await alertSync.syncLowStockAlertForItem(item);
+      return { item, alert };
+    },
+
+    async adjustStock(itemId: string, input: AdjustStockInput, session: Session): Promise<ItemMutationResult> {
+      assertInventoryManager(session);
+
+      const item = await repository.getItemById(itemId);
+      if (!item) {
+        throw notFoundError('Item not found.');
+      }
+
+      const nextOnHand = resolveNextStock(item, input.delta);
+      if (nextOnHand < 0) {
+        throw conflictError('Stock cannot go below zero.', {
+          onHand: item.onHand,
+          delta: input.delta,
+        });
+      }
+
+      if (nextOnHand < item.reservedQuantity) {
+        throw conflictError('Stock cannot drop below the quantity already reserved.', {
+          onHand: item.onHand,
+          reservedQuantity: item.reservedQuantity,
+          availableQuantity: getAvailableQuantity(item),
+        });
+      }
+
+      const updatedItem = await repository.updateItem(item.id, {
+        onHand: nextOnHand,
+      });
+
+      if (!updatedItem) {
+        throw notFoundError('Item not found.');
+      }
+
+      // ⚠️ SENIOR NOTE: a real database version would wrap the item update and alert sync in one transaction.
+      const alert = await alertSync.syncLowStockAlertForItem(updatedItem);
+      return { item: updatedItem, alert };
+    },
+  };
+}
+
+export const inventoryService = createInventoryService(inventoryRepository, alertService);
