@@ -18,3 +18,24 @@ When a test fails, inspect state after each awaited repository call rather than 
 
 The checks do not establish multi-process durability or SQL isolation. Those are follow-up integration tests for a real adapter.
 
+## Debugging the running app, not just the tests
+
+These are symptoms you can hit through the HTTP API, with the line that explains each:
+
+| Symptom | Cause |
+|---|---|
+| `401 UNAUTHORIZED` although headers look right | `x-user-role` is not exactly one of `owner`, `manager`, `clerk`, `viewer` (`src/lib/auth/roles.ts:8`, `src/lib/auth/session.ts:21`). Roles are case-sensitive. |
+| `500 INTERNAL_SERVER_ERROR` on a POST | the body is not valid JSON; `request.json()` throws a `SyntaxError` that `toErrorResponse` does not recognise (`src/lib/http/api.ts:29-41`). |
+| `409` "Stock cannot drop below the quantity already reserved." | `onHand + delta < reservedQuantity` (`src/services/inventoryService.ts:161-167`); release holds first. |
+| `409` "The item record no longer matches the reservation quantity." | the stored `reservedQuantity` counter is smaller than the hold being released (`src/services/reservationService.ts:144-149`), only reachable if something wrote the counter outside the hold/release paths. |
+| A new bread alert appears after an unrelated metadata edit | bread is seeded at available 6 with reorder point 6, which is low stock under `<=` (`src/domain/inventory.ts:58-60`), but the seed ships no bread alert (`src/data/seed.ts`). The first sync creates it. |
+| Data vanished | the dev server restarted; the repository is a module singleton (`src/repositories/inMemoryInventoryRepository.ts:245`). |
+
+## Exercises
+
+**Goal:** write a failing-first test for duplicate SKUs.
+**Check:** your test creates two items with the same SKU through `createInventoryService` and asserts the second rejects with `409`; today creation succeeds, so the test fails until a uniqueness check is added inside `createItem`'s `runExclusive` callback.
+
+**Goal:** prove the rollback restores alerts as well as items.
+**Check:** your test injects an alert service whose `syncLowStockAlertForItem` first calls the real one and then throws; afterwards `repository.listAlerts()` matches the pre-call list exactly, because the alerts Map is part of the snapshot (`inMemoryInventoryRepository.ts:70`, `:76`).
+

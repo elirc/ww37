@@ -1,6 +1,6 @@
 # Verification
 
-The final npm test script passed thirteen tests with no failures or skipped tests. TypeScript checking, the finite ESLint command and the Next production build also completed successfully. These are completed checks against the staged implementation. The source and test modifications preceded the final build; Astra reviewed the full baseline diff and captured the executable file hashes before delivery. Eight comparison snapshots match their immutable original source hashes exactly.
+The recorded npm test run passed thirteen tests with no failures or skipped tests. The current `tests/inventory.test.ts` contains 15 `test(...)` cases: the last two (`the service rejects an input the schema rejects even when the route is bypassed` and `repository clones are shallow...`, at lines 354 and 369) were added after that recorded run, so no evidence file in this folder covers them. Re-run `npm test` before relying on a count. TypeScript checking, the finite ESLint command and the Next production build also completed successfully. These are completed checks against the staged implementation. The source and test modifications preceded the final build; Astra reviewed the full baseline diff and captured the executable file hashes before delivery. Eight comparison snapshots match their immutable original source hashes exactly.
 
 ## Repeat from the project folder
 
